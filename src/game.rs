@@ -1,0 +1,495 @@
+use crate::card::Card;
+use crate::card::Suit;
+use crate::deck::Deck;
+use crate::player::Player;
+
+use macroquad::prelude::*;
+use std::collections::VecDeque;
+use std::io;
+
+pub enum GameState {
+    Dealing,
+    Playing,
+    GameOver,
+}
+
+pub enum Action {
+    PlayCard(usize),
+    TakeHome,
+}
+
+pub enum MoveError {
+    IllegalCard,
+    NothingToTakeHome,
+}
+
+pub struct Game {
+    pub state: GameState,
+    pub deck: Deck,
+    pub players: Vec<Player>,
+    pub kozyr_suit: Option<Suit>,
+    pub center_stack: VecDeque<Card>,
+    pub current_player_index: usize,
+}
+
+impl Game {
+    pub fn new(players: Vec<Player>) -> Self {
+        Game {
+            state: GameState::Dealing,
+            deck: Deck::new(),
+            players: players,
+            kozyr_suit: None,
+            center_stack: VecDeque::new(),
+            current_player_index: 0,
+        }
+    }
+
+    pub fn apply(&mut self, action: Action) -> Result<(), MoveError> {
+        todo!();
+    }
+
+    pub fn can_play(&self, hand_index: usize) -> bool {
+        let Some(card) = self.players[self.current_player_index].hand.get(hand_index) else {
+            return false;
+        };
+
+        match (self.center_stack.back(), self.kozyr_suit) {
+            (None, _) => true,
+            (Some(top), Some(kozyr)) => Game::is_valid_play(card, top, kozyr),
+            (Some(_), None) => false,
+        }
+    }
+
+    pub fn deal(&mut self) {
+        self.deck.shuffle();
+        while let GameState::Dealing = self.state {
+            self.play_dealing_phase();
+            if let GameState::Dealing = self.state {
+                self.current_player_index = self.next_player();
+            }
+        }
+    }
+
+    pub fn run(&mut self) {
+        self.deal();
+        loop {
+            match self.state {
+                GameState::Dealing => {
+                    self.play_dealing_phase();
+                    if let GameState::Dealing = self.state {
+                        self.current_player_index = self.next_player();
+                    }
+                }
+                GameState::Playing => {
+                    let plays_again = self.play_combat_phase();
+                    if let GameState::Playing = self.state
+                        && !plays_again
+                    {
+                        self.current_player_index = self.next_player();
+                    }
+                }
+                GameState::GameOver => {
+                    println!("The game has ended!");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn play_dealing_phase(&mut self) {
+        let current_index = self.current_player_index;
+
+        loop {
+            let my_top_rank = match self.players[current_index].top_card() {
+                Some(card) => card.rank,
+                None => break,
+            };
+
+            if let Some(target_index) = self.find_gift_target(current_index, my_top_rank) {
+                let gifted_card = self.players[current_index].face_up_stack.pop().unwrap();
+                println!(
+                    "{} gifts {} to {}",
+                    self.players[current_index].name.trim().to_string(),
+                    gifted_card,
+                    self.players[target_index].name.trim().to_string(),
+                );
+                self.players[target_index].face_up_stack.push(gifted_card);
+            } else {
+                break;
+            }
+        }
+
+        loop {
+            let drawn_card = match self.deck.draw() {
+                Some(card) => card,
+                None => {
+                    for player in &mut self.players {
+                        player.hand.append(&mut player.face_up_stack);
+                    }
+                    self.state = GameState::Playing;
+                    println!("Battle starting.");
+                    self.current_player_index = self
+                        .find_kozyr_two_holder()
+                        .expect("Unknown trump suit or the deck is not empty");
+                    if let Some(suit) = self.kozyr_suit {
+                        println!("{} is the Trump Suit", suit);
+                        println!(
+                            "{} starts, because they have the 2 of {}",
+                            self.players[self.current_player_index]
+                                .name
+                                .trim()
+                                .to_string(),
+                            suit
+                        );
+                    }
+                    return;
+                }
+            };
+
+            if self.deck.cards.is_empty() {
+                self.kozyr_suit = Some(drawn_card.suit);
+            }
+
+            println!(
+                "{} draws {}",
+                self.players[current_index].name.trim().to_string(),
+                drawn_card,
+            );
+
+            if let Some(target_index) = self.find_gift_target(current_index, drawn_card.rank) {
+                println!(
+                    "{} gifts {} to {}",
+                    self.players[current_index].name.trim().to_string(),
+                    drawn_card,
+                    self.players[target_index].name.trim().to_string(),
+                );
+                self.players[target_index].face_up_stack.push(drawn_card);
+                continue;
+            } else {
+                self.players[self.current_player_index]
+                    .face_up_stack
+                    .push(drawn_card);
+                return;
+            }
+        }
+    }
+
+    /// Returns true if the player cleared the stack and gets to play again.
+    fn play_combat_phase(&mut self) -> bool {
+        let current_index = self.current_player_index;
+
+        loop {
+            println!("{}", self.players[current_index]);
+            println!("Center stack: {:?}", self.center_stack);
+            println!(
+                "{}'s move. Type in the card you want to place:",
+                self.players[current_index].name.trim(),
+            );
+
+            let choice = match self.read_card_choice() {
+                Some(i) => i,
+                None => {
+                    let bottom_card = self
+                        .center_stack
+                        .pop_front()
+                        .expect("take home is not offered if stack empty");
+                    self.players[current_index].hand.push(bottom_card);
+                    println!(
+                        "{} took the bottom card home!",
+                        self.players[current_index].name.trim()
+                    );
+                    break false;
+                }
+            };
+
+            let chosen_card = self.players[self.current_player_index].hand[choice];
+
+            if self.can_play(choice) {
+                self.players[current_index].hand.remove(choice);
+                self.center_stack.push_back(chosen_card);
+                if self.center_stack.len() == self.players.len() {
+                    self.center_stack.clear();
+                    println!("Round ended! Cleared stack.");
+                    break true;
+                }
+                break false;
+            } else {
+                println!("You can't play {} on that", chosen_card);
+            }
+        }
+    }
+
+    fn is_plus_one(rank_a: u8, rank_b: u8) -> bool {
+        if rank_b == 14 {
+            rank_a == 2
+        } else {
+            rank_a == rank_b + 1
+        }
+    }
+
+    fn find_gift_target(&self, current_player_index: usize, card_to_give: u8) -> Option<usize> {
+        let num_players = self.players.len();
+
+        for offset in 1..num_players {
+            let target_index = (current_player_index + offset) % num_players;
+
+            if let Some(target_card) = self.players[target_index].top_card() {
+                if Game::is_plus_one(card_to_give, target_card.rank) {
+                    return Some(target_index);
+                }
+            }
+        }
+        None
+    }
+
+    fn next_player(&self) -> usize {
+        (self.current_player_index + 1) % self.players.len()
+    }
+
+    fn find_kozyr_two_holder(&self) -> Option<usize> {
+        if let Some(kozyr_suit) = self.kozyr_suit {
+            let card = Card {
+                suit: kozyr_suit,
+                rank: 2,
+            };
+            for player in &self.players {
+                if player.hand.contains(&card) {
+                    return Some(player.id);
+                }
+            }
+            None
+        } else {
+            None
+        }
+    }
+
+    fn read_card_choice(&self) -> Option<usize> {
+        let hand_len = self.players[self.current_player_index].hand.len();
+        let can_take_home = !self.center_stack.is_empty();
+        loop {
+            if can_take_home {
+                println!("Choose a card (1-{hand_len}) or 0 to take home:");
+            } else {
+                println!("Choose a card (1-{hand_len}):");
+            }
+            let mut input = String::new();
+            io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read line");
+
+            match input.trim().parse::<usize>() {
+                Ok(0) if can_take_home => return None,
+                Ok(0) => println!("Table is empty, can't take home."),
+                Ok(n) if n >= 1 && n <= hand_len => return Some(n - 1),
+                _ => println!("Invalid choice, try again"),
+            }
+        }
+    }
+
+    fn is_valid_play(played: &Card, top: &Card, kozyr_suit: Suit) -> bool {
+        if kozyr_suit != Suit::Clubs {
+            if played.suit == kozyr_suit && top.suit != kozyr_suit && top.suit != Suit::Clubs {
+                return true;
+            }
+        }
+        if played.suit == top.suit {
+            return played.rank > top.rank;
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+
+mod tests {
+    use super::*;
+
+    fn card(rank: u8, suit: Suit) -> Card {
+        Card { rank, suit }
+    }
+
+    #[test]
+    fn same_suit_higher_rank_beats() {
+        assert!(Game::is_valid_play(
+            &card(10, Suit::Hearts),
+            &card(9, Suit::Hearts),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn same_suit_lower_rank_doesnt_beat() {
+        assert_eq!(
+            Game::is_valid_play(&card(8, Suit::Hearts), &card(9, Suit::Hearts), Suit::Spades),
+            false
+        );
+    }
+
+    #[test]
+    fn kozyr_suit_lower_rank_beats() {
+        assert!(Game::is_valid_play(
+            &card(2, Suit::Spades),
+            &card(9, Suit::Hearts),
+            Suit::Spades,
+        ));
+    }
+
+    // Rule 1: club can only beat club
+
+    #[test]
+    fn higher_club_beats_lower_club() {
+        assert!(Game::is_valid_play(
+            &card(10, Suit::Clubs),
+            &card(5, Suit::Clubs),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn lower_club_doesnt_beat_higher_club() {
+        assert!(!Game::is_valid_play(
+            &card(5, Suit::Clubs),
+            &card(10, Suit::Clubs),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn club_doesnt_beat_other_suit() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Clubs),
+            &card(2, Suit::Hearts),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn club_doesnt_beat_kozyr() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Clubs),
+            &card(2, Suit::Spades),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn other_suit_doesnt_beat_club() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Hearts),
+            &card(2, Suit::Clubs),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn kozyr_doesnt_beat_club() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Spades),
+            &card(2, Suit::Clubs),
+            Suit::Spades,
+        ));
+    }
+
+    // Rule 2: kozyr beats everything except clubs and higher kozyr
+
+    #[test]
+    fn lowest_kozyr_beats_highest_other_suit() {
+        assert!(Game::is_valid_play(
+            &card(2, Suit::Spades),
+            &card(14, Suit::Diamonds),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn higher_kozyr_beats_lower_kozyr() {
+        assert!(Game::is_valid_play(
+            &card(10, Suit::Spades),
+            &card(5, Suit::Spades),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn lower_kozyr_doesnt_beat_higher_kozyr() {
+        assert!(!Game::is_valid_play(
+            &card(5, Suit::Spades),
+            &card(10, Suit::Spades),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn other_suit_doesnt_beat_kozyr() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Hearts),
+            &card(2, Suit::Spades),
+            Suit::Spades,
+        ));
+    }
+
+    #[test]
+    fn different_non_kozyr_suit_doesnt_beat() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Hearts),
+            &card(2, Suit::Diamonds),
+            Suit::Spades,
+        ));
+    }
+
+    // Rule 3: if kozyr is clubs, there is no kozyr and all suits are equal
+
+    #[test]
+    fn clubs_kozyr_club_doesnt_beat_other_suit() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Clubs),
+            &card(2, Suit::Hearts),
+            Suit::Clubs,
+        ));
+    }
+
+    #[test]
+    fn clubs_kozyr_other_suit_doesnt_beat_club() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Hearts),
+            &card(2, Suit::Clubs),
+            Suit::Clubs,
+        ));
+    }
+
+    #[test]
+    fn clubs_kozyr_higher_club_beats_lower_club() {
+        assert!(Game::is_valid_play(
+            &card(10, Suit::Clubs),
+            &card(5, Suit::Clubs),
+            Suit::Clubs,
+        ));
+    }
+
+    #[test]
+    fn clubs_kozyr_same_suit_higher_beats() {
+        assert!(Game::is_valid_play(
+            &card(10, Suit::Hearts),
+            &card(5, Suit::Hearts),
+            Suit::Clubs,
+        ));
+    }
+
+    #[test]
+    fn clubs_kozyr_same_suit_lower_doesnt_beat() {
+        assert!(!Game::is_valid_play(
+            &card(5, Suit::Diamonds),
+            &card(10, Suit::Diamonds),
+            Suit::Clubs,
+        ));
+    }
+
+    #[test]
+    fn clubs_kozyr_different_suits_dont_beat() {
+        assert!(!Game::is_valid_play(
+            &card(14, Suit::Spades),
+            &card(2, Suit::Hearts),
+            Suit::Clubs,
+        ));
+    }
+}
