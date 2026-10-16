@@ -45,7 +45,36 @@ impl Game {
     }
 
     pub fn apply(&mut self, action: Action) -> Result<(), MoveError> {
-        todo!();
+        match action {
+            Action::PlayCard(i) => {
+                if !self.can_play(i) {
+                    Err(MoveError::IllegalCard)
+                } else {
+                    let chosen_card = self.players[self.current_player_index].hand[i];
+                    self.players[self.current_player_index].hand.remove(i);
+                    self.center_stack.push_back(chosen_card);
+                    if self.center_stack.len() == self.players.len() {
+                        self.center_stack.clear();
+                    } else {
+                        self.current_player_index = self.next_player();
+                    }
+                    Ok(())
+                }
+            }
+            Action::TakeHome => {
+                if self.center_stack.is_empty() {
+                    Err(MoveError::NothingToTakeHome)
+                } else {
+                    self.players[self.current_player_index].hand.push(
+                        self.center_stack
+                            .pop_front()
+                            .expect("Center stack expected non-empty"),
+                    );
+                    self.current_player_index = self.next_player();
+                    Ok(())
+                }
+            }
+        }
     }
 
     pub fn can_play(&self, hand_index: usize) -> bool {
@@ -185,37 +214,6 @@ impl Game {
                 "{}'s move. Type in the card you want to place:",
                 self.players[current_index].name.trim(),
             );
-
-            let choice = match self.read_card_choice() {
-                Some(i) => i,
-                None => {
-                    let bottom_card = self
-                        .center_stack
-                        .pop_front()
-                        .expect("take home is not offered if stack empty");
-                    self.players[current_index].hand.push(bottom_card);
-                    println!(
-                        "{} took the bottom card home!",
-                        self.players[current_index].name.trim()
-                    );
-                    break false;
-                }
-            };
-
-            let chosen_card = self.players[self.current_player_index].hand[choice];
-
-            if self.can_play(choice) {
-                self.players[current_index].hand.remove(choice);
-                self.center_stack.push_back(chosen_card);
-                if self.center_stack.len() == self.players.len() {
-                    self.center_stack.clear();
-                    println!("Round ended! Cleared stack.");
-                    break true;
-                }
-                break false;
-            } else {
-                println!("You can't play {} on that", chosen_card);
-            }
         }
     }
 
@@ -306,6 +304,176 @@ mod tests {
 
     fn card(rank: u8, suit: Suit) -> Card {
         Card { rank, suit }
+    }
+
+    fn test_game(hands: Vec<Vec<Card>>, kozyr: Suit) -> Game {
+        let mut players = Vec::new();
+        for (i, hand) in hands.into_iter().enumerate() {
+            let mut player = Player::new(i, format!("Player {i}"));
+            player.hand = hand;
+            players.push(player);
+        }
+
+        let mut game = Game::new(players);
+        game.state = GameState::Playing;
+        game.kozyr_suit = Some(kozyr);
+        game
+    }
+
+    // apply: PlayCard
+
+    #[test]
+    fn play_card_moves_it_from_hand_to_stack() {
+        let mut game = test_game(
+            vec![
+                vec![card(5, Suit::Hearts), card(9, Suit::Diamonds)],
+                vec![card(7, Suit::Hearts)],
+            ],
+            Suit::Spades,
+        );
+
+        let result = game.apply(Action::PlayCard(0));
+
+        assert!(result.is_ok());
+        assert_eq!(game.players[0].hand, vec![card(9, Suit::Diamonds)]);
+        assert_eq!(game.center_stack, vec![card(5, Suit::Hearts)]);
+    }
+
+    #[test]
+    fn play_card_passes_turn_to_next_player() {
+        let mut game = test_game(
+            vec![vec![card(5, Suit::Hearts)], vec![card(7, Suit::Hearts)]],
+            Suit::Spades,
+        );
+
+        assert!(game.apply(Action::PlayCard(0)).is_ok());
+
+        assert_eq!(game.current_player_index, 1);
+    }
+
+    #[test]
+    fn last_player_passes_turn_back_to_first() {
+        let mut game = test_game(
+            vec![
+                vec![card(3, Suit::Diamonds)],
+                vec![card(4, Suit::Diamonds)],
+                vec![card(10, Suit::Hearts)],
+            ],
+            Suit::Spades,
+        );
+        game.current_player_index = 2;
+        game.center_stack = VecDeque::from([card(5, Suit::Hearts)]);
+
+        assert!(game.apply(Action::PlayCard(0)).is_ok());
+
+        assert_eq!(game.current_player_index, 0);
+    }
+
+    #[test]
+    fn kozyr_can_be_played_on_higher_card() {
+        let mut game = test_game(
+            vec![vec![card(2, Suit::Spades)], vec![card(7, Suit::Hearts)]],
+            Suit::Spades,
+        );
+        game.center_stack = VecDeque::from([card(14, Suit::Hearts)]);
+
+        let result = game.apply(Action::PlayCard(0));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn illegal_card_is_rejected_and_nothing_changes() {
+        let mut game = test_game(
+            vec![vec![card(5, Suit::Hearts)], vec![card(7, Suit::Hearts)]],
+            Suit::Spades,
+        );
+        game.center_stack = VecDeque::from([card(10, Suit::Hearts)]);
+
+        let result = game.apply(Action::PlayCard(0));
+
+        assert!(matches!(result, Err(MoveError::IllegalCard)));
+        assert_eq!(game.players[0].hand, vec![card(5, Suit::Hearts)]);
+        assert_eq!(game.center_stack, vec![card(10, Suit::Hearts)]);
+        assert_eq!(game.current_player_index, 0);
+    }
+
+    #[test]
+    fn card_index_out_of_range_is_rejected() {
+        let mut game = test_game(
+            vec![vec![card(5, Suit::Hearts)], vec![card(7, Suit::Hearts)]],
+            Suit::Spades,
+        );
+
+        let result = game.apply(Action::PlayCard(5));
+
+        assert!(matches!(result, Err(MoveError::IllegalCard)));
+        assert_eq!(game.players[0].hand, vec![card(5, Suit::Hearts)]);
+    }
+
+    #[test]
+    fn filling_the_stack_clears_it_and_same_player_goes_again() {
+        let mut game = test_game(
+            vec![
+                vec![card(10, Suit::Hearts), card(3, Suit::Diamonds)],
+                vec![card(7, Suit::Hearts)],
+            ],
+            Suit::Spades,
+        );
+        game.center_stack = VecDeque::from([card(5, Suit::Hearts)]);
+
+        let result = game.apply(Action::PlayCard(0));
+
+        assert!(result.is_ok());
+        assert!(game.center_stack.is_empty());
+        assert_eq!(game.current_player_index, 0);
+    }
+
+    // apply: TakeHome
+
+    #[test]
+    fn take_home_on_empty_stack_is_rejected() {
+        let mut game = test_game(
+            vec![vec![card(5, Suit::Hearts)], vec![card(7, Suit::Hearts)]],
+            Suit::Spades,
+        );
+
+        let result = game.apply(Action::TakeHome);
+
+        assert!(matches!(result, Err(MoveError::NothingToTakeHome)));
+        assert_eq!(game.players[0].hand, vec![card(5, Suit::Hearts)]);
+        assert_eq!(game.current_player_index, 0);
+    }
+
+    #[test]
+    fn take_home_takes_the_bottom_card() {
+        let mut game = test_game(
+            vec![vec![card(3, Suit::Diamonds)], vec![card(7, Suit::Hearts)]],
+            Suit::Spades,
+        );
+        game.center_stack = VecDeque::from([card(5, Suit::Hearts), card(10, Suit::Hearts)]);
+
+        let result = game.apply(Action::TakeHome);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            game.players[0].hand,
+            vec![card(3, Suit::Diamonds), card(5, Suit::Hearts)]
+        );
+        assert_eq!(game.center_stack, vec![card(10, Suit::Hearts)]);
+    }
+
+    #[test]
+    fn take_home_passes_turn_to_next_player() {
+        let mut game = test_game(
+            vec![vec![card(3, Suit::Diamonds)], vec![card(7, Suit::Hearts)]],
+            Suit::Spades,
+        );
+        game.center_stack = VecDeque::from([card(5, Suit::Hearts)]);
+
+        assert!(game.apply(Action::TakeHome).is_ok());
+
+        assert_eq!(game.current_player_index, 1);
     }
 
     #[test]
