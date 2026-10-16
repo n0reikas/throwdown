@@ -3,9 +3,7 @@ use crate::card::Suit;
 use crate::deck::Deck;
 use crate::player::Player;
 
-use macroquad::prelude::*;
 use std::collections::VecDeque;
-use std::io;
 
 pub enum GameState {
     Dealing,
