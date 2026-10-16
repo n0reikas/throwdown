@@ -50,13 +50,7 @@ impl Game {
                 if !self.can_play(i) {
                     Err(MoveError::IllegalCard)
                 } else {
-                    let chosen_card = self.players[self.current_player_index].hand.remove(i);
-                    self.center_stack.push_back(chosen_card);
-                    if self.center_stack.len() == self.players.len() {
-                        self.center_stack.clear();
-                    } else {
-                        self.current_player_index = self.next_player();
-                    }
+                    self.play_card(i);
                     Ok(())
                 }
             }
@@ -64,16 +58,30 @@ impl Game {
                 if self.center_stack.is_empty() {
                     Err(MoveError::NothingToTakeHome)
                 } else {
-                    self.players[self.current_player_index].hand.push(
-                        self.center_stack
-                            .pop_front()
-                            .expect("Center stack expected non-empty"),
-                    );
-                    self.current_player_index = self.next_player();
+                    self.take_home();
                     Ok(())
                 }
             }
         }
+    }
+
+    fn play_card(&mut self, i: usize) {
+        let chosen_card = self.players[self.current_player_index].hand.remove(i);
+        self.center_stack.push_back(chosen_card);
+        if self.center_stack.len() == self.players.len() {
+            self.center_stack.clear();
+        } else {
+            self.current_player_index = self.next_player();
+        }
+    }
+
+    fn take_home(&mut self) {
+        self.players[self.current_player_index].hand.push(
+            self.center_stack
+                .pop_front()
+                .expect("Center stack expected non-empty"),
+        );
+        self.current_player_index = self.next_player();
     }
 
     pub fn can_play(&self, hand_index: usize) -> bool {
@@ -215,29 +223,6 @@ impl Game {
             None
         } else {
             None
-        }
-    }
-
-    fn read_card_choice(&self) -> Option<usize> {
-        let hand_len = self.players[self.current_player_index].hand.len();
-        let can_take_home = !self.center_stack.is_empty();
-        loop {
-            if can_take_home {
-                println!("Choose a card (1-{hand_len}) or 0 to take home:");
-            } else {
-                println!("Choose a card (1-{hand_len}):");
-            }
-            let mut input = String::new();
-            io::stdin()
-                .read_line(&mut input)
-                .expect("Failed to read line");
-
-            match input.trim().parse::<usize>() {
-                Ok(0) if can_take_home => return None,
-                Ok(0) => println!("Table is empty, can't take home."),
-                Ok(n) if n >= 1 && n <= hand_len => return Some(n - 1),
-                _ => println!("Invalid choice, try again"),
-            }
         }
     }
 
