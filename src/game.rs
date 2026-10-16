@@ -50,8 +50,7 @@ impl Game {
                 if !self.can_play(i) {
                     Err(MoveError::IllegalCard)
                 } else {
-                    let chosen_card = self.players[self.current_player_index].hand[i];
-                    self.players[self.current_player_index].hand.remove(i);
+                    let chosen_card = self.players[self.current_player_index].hand.remove(i);
                     self.center_stack.push_back(chosen_card);
                     if self.center_stack.len() == self.players.len() {
                         self.center_stack.clear();
@@ -92,40 +91,11 @@ impl Game {
     pub fn deal(&mut self) {
         self.deck.shuffle();
         while let GameState::Dealing = self.state {
-            self.play_dealing_phase();
-            if let GameState::Dealing = self.state {
-                self.current_player_index = self.next_player();
-            }
+            self.deal_turn();
         }
     }
 
-    pub fn run(&mut self) {
-        self.deal();
-        loop {
-            match self.state {
-                GameState::Dealing => {
-                    self.play_dealing_phase();
-                    if let GameState::Dealing = self.state {
-                        self.current_player_index = self.next_player();
-                    }
-                }
-                GameState::Playing => {
-                    let plays_again = self.play_combat_phase();
-                    if let GameState::Playing = self.state
-                        && !plays_again
-                    {
-                        self.current_player_index = self.next_player();
-                    }
-                }
-                GameState::GameOver => {
-                    println!("The game has ended!");
-                    break;
-                }
-            }
-        }
-    }
-
-    fn play_dealing_phase(&mut self) {
+    fn deal_turn(&mut self) {
         let current_index = self.current_player_index;
 
         loop {
@@ -198,22 +168,9 @@ impl Game {
                 self.players[self.current_player_index]
                     .face_up_stack
                     .push(drawn_card);
+                self.current_player_index = self.next_player();
                 return;
             }
-        }
-    }
-
-    /// Returns true if the player cleared the stack and gets to play again.
-    fn play_combat_phase(&mut self) -> bool {
-        let current_index = self.current_player_index;
-
-        loop {
-            println!("{}", self.players[current_index]);
-            println!("Center stack: {:?}", self.center_stack);
-            println!(
-                "{}'s move. Type in the card you want to place:",
-                self.players[current_index].name.trim(),
-            );
         }
     }
 
