@@ -26,7 +26,7 @@ impl Deck {
     pub fn shuffle(&mut self) {
         let deck = self;
 
-        for i in (1..(deck.cards.len() - 1)).rev() {
+        for i in (1..deck.cards.len()).rev() {
             let j = rand::rng().random_range(0..=i);
             deck.cards.swap(j, i);
         }
