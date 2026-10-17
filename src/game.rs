@@ -63,7 +63,7 @@ impl Game {
         }
     }
 
-    fn play_card(&mut self, i: usize) {
+    pub fn play_card(&mut self, i: usize) {
         let chosen_card = self.players[self.current_player_index].hand.remove(i);
         self.center_stack.push_back(chosen_card);
         if self.center_stack.len() == self.players.len() {

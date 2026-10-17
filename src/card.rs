@@ -14,6 +14,25 @@ pub struct Card {
     pub rank: u8,
 }
 
+impl Card {
+    pub fn short_label(&self) -> String {
+        let rank = match self.rank {
+            11 => "J".to_string(),
+            12 => "Q".to_string(),
+            13 => "K".to_string(),
+            14 => "A".to_string(),
+            n => n.to_string(),
+        };
+        let suit = match self.suit {
+            Suit::Clubs => "C",
+            Suit::Diamonds => "D",
+            Suit::Hearts => "H",
+            Suit::Spades => "S",
+        };
+        format!("{rank}{suit}")
+    }
+}
+
 impl fmt::Display for Suit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)

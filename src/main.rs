@@ -23,9 +23,16 @@ async fn main() {
     game.deal();
 
     loop {
+        let hand_len = game.players[game.current_player_index].hand.len();
+        let rects = hand_layout(hand_len);
         if is_mouse_button_pressed(MouseButton::Left) {
             let (mouse_x, mouse_y) = mouse_position();
-            // let _ = game.apply(Action::PlayCard(i));
+            for (i, rect) in rects.iter().enumerate() {
+                if rect.contains(vec2(mouse_x, mouse_y)) {
+                    let _ = game.apply(Action::PlayCard(i));
+                    break;
+                }
+            }
         }
         clear_background(DARKGREEN);
         if let Some(kozyr_suit) = game.kozyr_suit {
@@ -46,13 +53,11 @@ async fn main() {
             TEXT_COLOR,
         );
 
-        let rects = hand_layout(current_player.hand.len());
-
         for (card, rect) in current_player.hand.iter().zip(rects.iter()) {
             draw_rectangle(rect.x, rect.y, rect.w, rect.h, WHITE);
             draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, BLACK);
             draw_text(
-                format!("{card}"),
+                card.short_label(),
                 rect.x,
                 rect.y + 45.0,
                 FONT_SIZE,
