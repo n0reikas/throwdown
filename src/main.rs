@@ -3,8 +3,9 @@ mod deck;
 mod game;
 mod player;
 
-use std::mem::take;
+use std::collections::HashMap;
 
+use crate::card::Card;
 use crate::game::Action;
 use game::Game;
 use macroquad::prelude::*;
@@ -14,6 +15,41 @@ const FONT_SIZE: f32 = 20.0;
 const TEXT_COLOR: Color = BLACK;
 const CARD_WIDTH: f32 = 60.0;
 const CARD_HEIGHT: f32 = 90.0;
+
+const TURN_DELAY: f32 = 0.5;
+const HAND_HIDE_TIME: f32 = 0.35;
+const HAND_HIDE_OFFSET: f32 = 250.0;
+
+const FAN_RADIUS: f32 = 400.0;
+const FAN_STEP: f32 = 0.08;
+const FAN_MAX_ANGLE: f32 = 0.8;
+
+#[derive(Clone, Copy)]
+struct Pose {
+    center: Vec2,
+    rotation: f32,
+}
+
+impl Pose {
+    fn lerp(self, to: Pose, t: f32) -> Pose {
+        Pose {
+            center: self.center.lerp(to.center, t),
+            rotation: self.rotation + (to.rotation - self.rotation) * t,
+        }
+    }
+
+    fn lowered(self) -> Pose {
+        Pose {
+            center: self.center + vec2(0.0, HAND_HIDE_OFFSET),
+            ..self
+        }
+    }
+
+    fn contains(&self, point: Vec2) -> bool {
+        let local = Vec2::from_angle(-self.rotation).rotate(point - self.center);
+        local.x.abs() <= CARD_WIDTH / 2.0 && local.y.abs() <= CARD_HEIGHT / 2.0
+    }
+}
 
 #[macroquad::main("Throwdown")]
 async fn main() {
@@ -25,26 +61,42 @@ async fn main() {
     let mut game = Game::new(player_list);
 
     game.deal();
+    let mut card_pos: HashMap<Card, Pose> = HashMap::new();
+    let mut shown_player = game.current_player_index;
+    let mut switch_timer = 0.0;
 
     loop {
-        let hand_len = game.players[game.current_player_index].hand.len();
-        let stack_len = game.center_stack.len();
-        let hand_rects = hand_layout(hand_len);
-        let stack_rects = stack_layout(stack_len);
-        let take_home_rect = Rect::new(600.0, 400.0, 100.0, 40.0);
+        let dt = get_frame_time();
+        let t = 1.0 - (-12.0 * dt).exp();
 
-        if is_mouse_button_pressed(MouseButton::Left) {
-            let (mouse_x, mouse_y) = mouse_position();
-            for (i, rect) in hand_rects.iter().enumerate() {
-                if rect.contains(vec2(mouse_x, mouse_y)) {
-                    let _ = game.apply(Action::PlayCard(i));
-                    break;
+        if shown_player != game.current_player_index {
+            switch_timer += dt;
+            if switch_timer >= TURN_DELAY + HAND_HIDE_TIME {
+                switch_timer = 0.0;
+                shown_player = game.current_player_index;
+                let hand = &game.players[shown_player].hand;
+                for (card, pose) in hand.iter().zip(hand_layout(hand.len())) {
+                    card_pos.insert(*card, pose.lowered());
                 }
             }
-            if take_home_rect.contains(vec2(mouse_x, mouse_y)) {
+        }
+        let hand_hidden = shown_player != game.current_player_index && switch_timer >= TURN_DELAY;
+
+        let hand_len = game.players[shown_player].hand.len();
+        let stack_len = game.center_stack.len();
+        let hand_poses = hand_layout(hand_len);
+        let stack_poses = stack_layout(stack_len);
+        let take_home_rect = Rect::new(600.0, 400.0, 100.0, 40.0);
+
+        if shown_player == game.current_player_index && is_mouse_button_pressed(MouseButton::Left) {
+            let mouse = Vec2::from(mouse_position());
+            if let Some(i) = hand_poses.iter().rposition(|pose| pose.contains(mouse)) {
+                let _ = game.apply(Action::PlayCard(i));
+            } else if take_home_rect.contains(mouse) {
                 let _ = game.apply(Action::TakeHome);
             }
         }
+
         clear_background(DARKGREEN);
         if let Some(kozyr_suit) = game.kozyr_suit {
             draw_text(
@@ -55,7 +107,7 @@ async fn main() {
                 TEXT_COLOR,
             );
         }
-        let current_player = &game.players[game.current_player_index];
+        let current_player = &game.players[shown_player];
         draw_text(
             format!("{}'s turn", current_player.name),
             40.0,
@@ -64,28 +116,21 @@ async fn main() {
             TEXT_COLOR,
         );
 
-        for (card, rect) in current_player.hand.iter().zip(hand_rects.iter()) {
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, WHITE);
-            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, BLACK);
-            draw_text(
-                card.short_label(),
-                rect.x,
-                rect.y + 45.0,
-                FONT_SIZE,
-                TEXT_COLOR,
-            );
+        for (card, target) in current_player.hand.iter().zip(hand_poses.iter()) {
+            let target = if hand_hidden {
+                target.lowered()
+            } else {
+                *target
+            };
+            let pose = card_pos.entry(*card).or_insert(target);
+            *pose = pose.lerp(target, t);
+            draw_card(card, *pose);
         }
 
-        for (card, rect) in game.center_stack.iter().zip(stack_rects.iter()) {
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, WHITE);
-            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, BLACK);
-            draw_text(
-                card.short_label(),
-                rect.x,
-                rect.y + 45.0,
-                FONT_SIZE,
-                TEXT_COLOR,
-            );
+        for (card, target) in game.center_stack.iter().zip(stack_poses.iter()) {
+            let pose = card_pos.entry(*card).or_insert(*target);
+            *pose = pose.lerp(*target, t);
+            draw_card(card, *pose);
         }
 
         if !game.center_stack.is_empty() {
@@ -117,20 +162,68 @@ async fn main() {
     }
 }
 
-fn hand_layout(card_count: usize) -> Vec<Rect> {
+fn draw_card(card: &Card, pose: Pose) {
+    let params = DrawRectangleParams {
+        offset: vec2(0.5, 0.5),
+        rotation: pose.rotation,
+        color: WHITE,
+    };
+    draw_rectangle_ex(
+        pose.center.x,
+        pose.center.y,
+        CARD_WIDTH,
+        CARD_HEIGHT,
+        params.clone(),
+    );
+    draw_rectangle_lines_ex(
+        pose.center.x,
+        pose.center.y,
+        CARD_WIDTH,
+        CARD_HEIGHT,
+        2.0,
+        DrawRectangleParams {
+            color: BLACK,
+            ..params
+        },
+    );
+
+    // label sits in the top-left corner, which stays visible when cards overlap
+    let corner = vec2(-CARD_WIDTH / 2.0 + 4.0, -CARD_HEIGHT / 2.0 + FONT_SIZE);
+    let label = pose.center + Vec2::from_angle(pose.rotation).rotate(corner);
+    draw_text_ex(
+        card.short_label(),
+        label.x,
+        label.y,
+        TextParams {
+            font_size: FONT_SIZE as u16,
+            color: TEXT_COLOR,
+            rotation: pose.rotation,
+            ..Default::default()
+        },
+    );
+}
+
+// cards sit on an arc around a pivot below the screen, each one tilted outwards
+fn hand_layout(card_count: usize) -> Vec<Pose> {
     let mut cards = Vec::new();
-    let y = 500.0;
-    let width = CARD_WIDTH;
-    let height = CARD_HEIGHT;
+    let step = if card_count > 1 {
+        FAN_STEP.min(FAN_MAX_ANGLE / (card_count - 1) as f32)
+    } else {
+        0.0
+    };
+    let pivot = vec2(screen_width() / 2.0, screen_height() - 90.0 + FAN_RADIUS);
     for i in 0..card_count {
-        let x = i as f32 * width;
-        let r = Rect::new(x, y, width, height);
-        cards.push(r);
+        let angle = (i as f32 - (card_count - 1) as f32 / 2.0) * step;
+        let center = pivot + vec2(angle.sin(), -angle.cos()) * FAN_RADIUS;
+        cards.push(Pose {
+            center,
+            rotation: angle,
+        });
     }
     cards
 }
 
-fn stack_layout(card_count: usize) -> Vec<Rect> {
+fn stack_layout(card_count: usize) -> Vec<Pose> {
     let mut cards = Vec::new();
     let mut y = 100.0;
     let width = CARD_WIDTH;
@@ -138,8 +231,10 @@ fn stack_layout(card_count: usize) -> Vec<Rect> {
     for i in 0..card_count {
         let x = i as f32 * 10.0 + width;
         y += i as f32 * 10.0;
-        let r = Rect::new(x, y, width, height);
-        cards.push(r);
+        cards.push(Pose {
+            center: vec2(x + width / 2.0, y + height / 2.0),
+            rotation: 0.0,
+        });
     }
     cards
 }
