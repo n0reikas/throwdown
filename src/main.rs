@@ -20,6 +20,8 @@ const TURN_DELAY: f32 = 0.5;
 const HAND_HIDE_TIME: f32 = 0.35;
 const HAND_HIDE_OFFSET: f32 = 250.0;
 
+const CARD_RAISE_OFFSET: f32 = -25.0;
+
 const FAN_RADIUS: f32 = 400.0;
 const FAN_STEP: f32 = 0.08;
 const FAN_MAX_ANGLE: f32 = 0.8;
@@ -41,6 +43,14 @@ impl Pose {
     fn lowered(self) -> Pose {
         Pose {
             center: self.center + vec2(0.0, HAND_HIDE_OFFSET),
+            ..self
+        }
+    }
+
+    fn raised(self) -> Pose {
+        Pose {
+            center: self.center
+                + Vec2::from_angle(self.rotation).rotate(vec2(0.0, CARD_RAISE_OFFSET)),
             ..self
         }
     }
@@ -84,15 +94,22 @@ async fn main() {
 
         let hand_len = game.players[shown_player].hand.len();
         let stack_len = game.center_stack.len();
+        let discard_len = game.discard_pile.len();
         let hand_poses = hand_layout(hand_len);
         let stack_poses = stack_layout(stack_len);
+        let discard_poses = discard_layout(discard_len);
         let take_home_rect = Rect::new(600.0, 400.0, 100.0, 40.0);
 
-        if shown_player == game.current_player_index && is_mouse_button_pressed(MouseButton::Left) {
-            let mouse = Vec2::from(mouse_position());
-            if let Some(i) = hand_poses.iter().rposition(|pose| pose.contains(mouse)) {
+        let mouse = Vec2::from(mouse_position());
+        let hovered = if shown_player == game.current_player_index {
+            hand_poses.iter().rposition(|pose| pose.contains(mouse))
+        } else {
+            None
+        };
+        if is_mouse_button_pressed(MouseButton::Left) {
+            if let Some(i) = hovered {
                 let _ = game.apply(Action::PlayCard(i));
-            } else if take_home_rect.contains(mouse) {
+            } else if take_home_rect.contains(mouse) && shown_player == game.current_player_index {
                 let _ = game.apply(Action::TakeHome);
             }
         }
@@ -116,11 +133,21 @@ async fn main() {
             TEXT_COLOR,
         );
 
-        for (card, target) in current_player.hand.iter().zip(hand_poses.iter()) {
+        for (i, (card, target)) in current_player
+            .hand
+            .iter()
+            .zip(hand_poses.iter())
+            .enumerate()
+        {
             let target = if hand_hidden {
                 target.lowered()
             } else {
                 *target
+            };
+            let target = if hovered == Some(i) {
+                target.raised()
+            } else {
+                target
             };
             let pose = card_pos.entry(*card).or_insert(target);
             *pose = pose.lerp(target, t);
@@ -131,6 +158,12 @@ async fn main() {
             let pose = card_pos.entry(*card).or_insert(*target);
             *pose = pose.lerp(*target, t);
             draw_card(card, *pose);
+        }
+
+        for (card, target) in game.discard_pile.iter().zip(discard_poses.iter()) {
+            let pose = card_pos.entry(*card).or_insert(*target);
+            *pose = pose.lerp(*target, t);
+            draw_card_back(*pose);
         }
 
         if !game.center_stack.is_empty() {
@@ -203,6 +236,32 @@ fn draw_card(card: &Card, pose: Pose) {
     );
 }
 
+fn draw_card_back(pose: Pose) {
+    let params = DrawRectangleParams {
+        offset: vec2(0.5, 0.5),
+        rotation: pose.rotation,
+        color: MAROON,
+    };
+    draw_rectangle_ex(
+        pose.center.x,
+        pose.center.y,
+        CARD_WIDTH,
+        CARD_HEIGHT,
+        params.clone(),
+    );
+    draw_rectangle_lines_ex(
+        pose.center.x,
+        pose.center.y,
+        CARD_WIDTH,
+        CARD_HEIGHT,
+        2.0,
+        DrawRectangleParams {
+            color: BLACK,
+            ..params
+        },
+    );
+}
+
 // cards sit on an arc around a pivot below the screen, each one tilted outwards
 fn hand_layout(card_count: usize) -> Vec<Pose> {
     let mut cards = Vec::new();
@@ -234,6 +293,21 @@ fn stack_layout(card_count: usize) -> Vec<Pose> {
         cards.push(Pose {
             center: vec2(x + width / 2.0, y + height / 2.0),
             rotation: 0.0,
+        });
+    }
+    cards
+}
+
+fn discard_layout(card_count: usize) -> Vec<Pose> {
+    let mut cards = Vec::new();
+    let x = 750.0;
+    let y = 300.0;
+    let width = CARD_WIDTH;
+    let height = CARD_HEIGHT;
+    for i in 0..card_count {
+        cards.push(Pose {
+            center: vec2(x + width / 2.0, y + height / 2.0),
+            rotation: ((i as f32) * 1.7).sin() * 0.15,
         });
     }
     cards

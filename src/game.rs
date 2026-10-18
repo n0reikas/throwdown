@@ -28,6 +28,7 @@ pub struct Game {
     pub kozyr_suit: Option<Suit>,
     pub center_stack: VecDeque<Card>,
     pub current_player_index: usize,
+    pub discard_pile: Vec<Card>,
 }
 
 impl Game {
@@ -39,6 +40,7 @@ impl Game {
             kozyr_suit: None,
             center_stack: VecDeque::new(),
             current_player_index: 0,
+            discard_pile: Vec::new(),
         }
     }
 
@@ -67,7 +69,7 @@ impl Game {
         let chosen_card = self.players[self.current_player_index].hand.remove(i);
         self.center_stack.push_back(chosen_card);
         if self.center_stack.len() == self.players.len() {
-            self.center_stack.clear();
+            self.discard_pile.extend(self.center_stack.drain(..));
         } else {
             self.current_player_index = self.next_player();
         }
@@ -367,6 +369,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(game.center_stack.is_empty());
         assert_eq!(game.current_player_index, 0);
+        assert_ne!(game.discard_pile.len(), 0);
     }
 
     // apply: TakeHome
