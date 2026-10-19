@@ -1,15 +1,11 @@
-mod card;
-mod deck;
-mod game;
-mod player;
-
 use std::collections::HashMap;
 
-use crate::card::Card;
-use crate::game::Action;
-use game::Game;
+use ewebsock::{WsEvent, WsMessage, connect};
 use macroquad::prelude::*;
-use player::Player;
+use throwdown_core::card::Card;
+use throwdown_core::game::{Action, Game};
+use throwdown_core::player::Player;
+use throwdown_core::protocol::{ClientMsg, PlayerView, ServerMsg};
 
 const VIRTUAL_HEIGHT: f32 = 600.0;
 
@@ -74,21 +70,42 @@ fn window_conf() -> Conf {
     }
 }
 
+fn send(ws_tx: &mut ewebsock::WsSender, msg: &ClientMsg) {
+    ws_tx.send(WsMessage::Text(serde_json::to_string(msg).unwrap()));
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
-    let player_list = vec![
-        Player::new(0, "Alice".to_string()),
-        Player::new(1, "Bob".to_string()),
-        Player::new(2, "Carl".to_string()),
-    ];
-    let mut game = Game::new(player_list);
+    let name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "Player".to_string());
+    let (mut ws_tx, ws_rx) =
+        connect("ws://localhost:9001", ewebsock::Options::default()).expect("failed to connect");
 
-    game.deal();
+    let mut view: Option<PlayerView> = None;
     let mut card_pos: HashMap<Card, Pose> = HashMap::new();
-    let mut shown_player = game.current_player_index;
-    let mut switch_timer = 0.0;
 
     loop {
+        while let Some(event) = ws_rx.try_recv() {
+            match event {
+                WsEvent::Opened => {
+                    let join = ClientMsg::Join { name: name.clone() };
+                    ws_tx.send(WsMessage::Text(serde_json::to_string(&join).unwrap()));
+                }
+                WsEvent::Message(WsMessage::Text(text)) => {
+                    match serde_json::from_str::<ServerMsg>(&text) {
+                        Ok(ServerMsg::Welcome { seat }) => println!("seated at {seat}"),
+                        Ok(ServerMsg::State(v)) => view = Some(v),
+                        Ok(ServerMsg::Error(e)) => println!("server: {e}"),
+                        Err(e) => eprintln!("bad message: {e}"),
+                    }
+                }
+                WsEvent::Error(e) => eprintln!("connection error: {e}"),
+                WsEvent::Closed => println!("disconnected"),
+                _ => {}
+            }
+        }
+
         let dt = get_frame_time();
         let t = 1.0 - (-12.0 * dt).exp();
 
@@ -99,46 +116,37 @@ async fn main() {
             zoom: vec2(2.0 / virtual_w, 2.0 / VIRTUAL_HEIGHT),
             ..Default::default()
         };
+
         set_camera(&camera);
+        clear_background(DARKGREEN);
 
-        if shown_player != game.current_player_index {
-            switch_timer += dt;
-            if switch_timer >= TURN_DELAY + HAND_HIDE_TIME {
-                switch_timer = 0.0;
-                shown_player = game.current_player_index;
-                let hand = &game.players[shown_player].hand;
-                for (card, pose) in hand.iter().zip(hand_layout(hand.len(), virtual_w)) {
-                    card_pos.insert(*card, pose.lowered());
-                }
-            }
-        }
-        let hand_hidden = shown_player != game.current_player_index && switch_timer >= TURN_DELAY;
+        let Some(view) = view.as_ref() else {
+            draw_text("Waiting for players...", 40.0, 40.0, FONT_SIZE, TEXT_COLOR);
+            next_frame().await;
+            continue;
+        };
 
-        let hand_len = game.players[shown_player].hand.len();
-        let stack_len = game.center_stack.len();
-        let discard_len = game.discard_pile.len();
-        let hand_poses = hand_layout(hand_len, virtual_w);
-        let stack_poses = stack_layout(stack_len);
-        let discard_poses = discard_layout(discard_len, virtual_w);
+        let my_turn = view.current_player == view.my_seat;
+        let hand_poses = hand_layout(view.my_hand.len(), virtual_w);
+        let stack_poses = stack_layout(view.center_stack.len());
+        let discard_poses = discard_layout(view.discard_count, virtual_w);
         let take_home_rect = Rect::new(600.0, 400.0, 100.0, 40.0);
 
         let mouse = camera.screen_to_world(Vec2::from(mouse_position()));
-        let hovered = if shown_player == game.current_player_index {
+        let hovered = if my_turn {
             hand_poses.iter().rposition(|pose| pose.contains(mouse))
         } else {
             None
         };
-        if is_mouse_button_pressed(MouseButton::Left) {
+        if my_turn && is_mouse_button_pressed(MouseButton::Left) {
             if let Some(i) = hovered {
-                let _ = game.apply(Action::PlayCard(i));
-            } else if take_home_rect.contains(mouse) && shown_player == game.current_player_index {
-                let _ = game.apply(Action::TakeHome);
+                send(&mut ws_tx, &ClientMsg::Act(Action::PlayCard(i)));
+            } else if take_home_rect.contains(mouse) && !view.center_stack.is_empty() {
+                send(&mut ws_tx, &ClientMsg::Act(Action::TakeHome));
             }
         }
 
-        clear_background(DARKGREEN);
-        
-        if let Some(kozyr_suit) = game.kozyr_suit {
+        if let Some(kozyr_suit) = view.kozyr_suit {
             draw_text(
                 format!("Kozyr: {}", kozyr_suit),
                 40.0,
@@ -147,49 +155,35 @@ async fn main() {
                 TEXT_COLOR,
             );
         }
-        let current_player = &game.players[shown_player];
-        draw_text(
-            format!("{}'s turn", current_player.name),
-            40.0,
-            40.0 + FONT_SIZE,
-            FONT_SIZE,
-            TEXT_COLOR,
-        );
+        let turn_text = if my_turn {
+            "Your turn".to_string()
+        } else {
+            format!("{}'s turn", view.players[view.current_player].name)
+        };
+        draw_text(turn_text, 40.0, 40.0 + FONT_SIZE, FONT_SIZE, TEXT_COLOR);
 
-        for (i, (card, target)) in current_player
-            .hand
-            .iter()
-            .zip(hand_poses.iter())
-            .enumerate()
-        {
-            let target = if hand_hidden {
-                target.lowered()
-            } else {
-                *target
-            };
+        for (i, (card, target)) in view.my_hand.iter().zip(hand_poses.iter()).enumerate() {
             let target = if hovered == Some(i) {
                 target.raised()
             } else {
-                target
+                *target
             };
             let pose = card_pos.entry(*card).or_insert(target);
             *pose = pose.lerp(target, t);
             draw_card(card, *pose);
         }
 
-        for (card, target) in game.center_stack.iter().zip(stack_poses.iter()) {
+        for (card, target) in view.center_stack.iter().zip(stack_poses.iter()) {
             let pose = card_pos.entry(*card).or_insert(*target);
             *pose = pose.lerp(*target, t);
             draw_card(card, *pose);
         }
 
-        for (card, target) in game.discard_pile.iter().zip(discard_poses.iter()) {
-            let pose = card_pos.entry(*card).or_insert(*target);
-            *pose = pose.lerp(*target, t);
+        for pose in &discard_poses {
             draw_card_back(*pose);
         }
 
-        if !game.center_stack.is_empty() {
+        if my_turn && !view.center_stack.is_empty() {
             draw_rectangle(
                 take_home_rect.x,
                 take_home_rect.y,
