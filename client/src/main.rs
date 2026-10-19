@@ -11,6 +11,8 @@ use game::Game;
 use macroquad::prelude::*;
 use player::Player;
 
+const VIRTUAL_HEIGHT: f32 = 600.0;
+
 const FONT_SIZE: f32 = 20.0;
 const TEXT_COLOR: Color = BLACK;
 const CARD_WIDTH: f32 = 60.0;
@@ -61,7 +63,18 @@ impl Pose {
     }
 }
 
-#[macroquad::main("Throwdown")]
+fn window_conf() -> Conf {
+    Conf {
+        window_height: 1080,
+        window_width: 1920,
+        window_title: "Throwdown".to_string(),
+        window_resizable: true,
+        high_dpi: true,
+        ..Default::default()
+    }
+}
+
+#[macroquad::main(window_conf)]
 async fn main() {
     let player_list = vec![
         Player::new(0, "Alice".to_string()),
@@ -79,13 +92,22 @@ async fn main() {
         let dt = get_frame_time();
         let t = 1.0 - (-12.0 * dt).exp();
 
+        let virtual_w = VIRTUAL_HEIGHT * screen_width() / screen_height();
+
+        let camera = Camera2D {
+            target: vec2(virtual_w / 2.0, VIRTUAL_HEIGHT / 2.0),
+            zoom: vec2(2.0 / virtual_w, 2.0 / VIRTUAL_HEIGHT),
+            ..Default::default()
+        };
+        set_camera(&camera);
+
         if shown_player != game.current_player_index {
             switch_timer += dt;
             if switch_timer >= TURN_DELAY + HAND_HIDE_TIME {
                 switch_timer = 0.0;
                 shown_player = game.current_player_index;
                 let hand = &game.players[shown_player].hand;
-                for (card, pose) in hand.iter().zip(hand_layout(hand.len())) {
+                for (card, pose) in hand.iter().zip(hand_layout(hand.len(), virtual_w)) {
                     card_pos.insert(*card, pose.lowered());
                 }
             }
@@ -95,12 +117,12 @@ async fn main() {
         let hand_len = game.players[shown_player].hand.len();
         let stack_len = game.center_stack.len();
         let discard_len = game.discard_pile.len();
-        let hand_poses = hand_layout(hand_len);
+        let hand_poses = hand_layout(hand_len, virtual_w);
         let stack_poses = stack_layout(stack_len);
-        let discard_poses = discard_layout(discard_len);
+        let discard_poses = discard_layout(discard_len, virtual_w);
         let take_home_rect = Rect::new(600.0, 400.0, 100.0, 40.0);
 
-        let mouse = Vec2::from(mouse_position());
+        let mouse = camera.screen_to_world(Vec2::from(mouse_position()));
         let hovered = if shown_player == game.current_player_index {
             hand_poses.iter().rposition(|pose| pose.contains(mouse))
         } else {
@@ -115,6 +137,7 @@ async fn main() {
         }
 
         clear_background(DARKGREEN);
+        
         if let Some(kozyr_suit) = game.kozyr_suit {
             draw_text(
                 format!("Kozyr: {}", kozyr_suit),
@@ -263,14 +286,14 @@ fn draw_card_back(pose: Pose) {
 }
 
 // cards sit on an arc around a pivot below the screen, each one tilted outwards
-fn hand_layout(card_count: usize) -> Vec<Pose> {
+fn hand_layout(card_count: usize, virtual_w: f32) -> Vec<Pose> {
     let mut cards = Vec::new();
     let step = if card_count > 1 {
         FAN_STEP.min(FAN_MAX_ANGLE / (card_count - 1) as f32)
     } else {
         0.0
     };
-    let pivot = vec2(screen_width() / 2.0, screen_height() - 90.0 + FAN_RADIUS);
+    let pivot = vec2(virtual_w / 2.0, VIRTUAL_HEIGHT - 90.0 + FAN_RADIUS);
     for i in 0..card_count {
         let angle = (i as f32 - (card_count - 1) as f32 / 2.0) * step;
         let center = pivot + vec2(angle.sin(), -angle.cos()) * FAN_RADIUS;
@@ -298,10 +321,10 @@ fn stack_layout(card_count: usize) -> Vec<Pose> {
     cards
 }
 
-fn discard_layout(card_count: usize) -> Vec<Pose> {
+fn discard_layout(card_count: usize, virtual_w: f32) -> Vec<Pose> {
     let mut cards = Vec::new();
-    let x = 750.0;
-    let y = 300.0;
+    let x = virtual_w - CARD_WIDTH / 2.0;
+    let y = VIRTUAL_HEIGHT / 2.0 - CARD_HEIGHT;
     let width = CARD_WIDTH;
     let height = CARD_HEIGHT;
     for i in 0..card_count {

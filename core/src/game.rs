@@ -2,15 +2,19 @@ use crate::card::Card;
 use crate::card::Suit;
 use crate::deck::Deck;
 use crate::player::Player;
+use crate::protocol::{PlayerView, SeatView};
 
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+#[derive(Serialize, Deserialize, Clone)]
 pub enum GameState {
     Dealing,
     Playing,
     GameOver,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum Action {
     PlayCard(usize),
     TakeHome,
@@ -41,6 +45,27 @@ impl Game {
             center_stack: VecDeque::new(),
             current_player_index: 0,
             discard_pile: Vec::new(),
+        }
+    }
+
+    pub fn view_for(&self, seat: usize) -> PlayerView {
+        PlayerView {
+            my_seat: seat,
+            my_hand: self.players[seat].hand.clone(),
+            players: self
+                .players
+                .iter()
+                .map(|p| SeatView {
+                    name: p.name.clone(),
+                    hand_count: p.hand.len(),
+                    face_up_stack: p.face_up_stack.clone(),
+                })
+                .collect(),
+            center_stack: self.center_stack.iter().copied().collect(),
+            discard_count: self.discard_pile.len(),
+            kozyr_suit: self.kozyr_suit,
+            current_player: self.current_player_index,
+            state: self.state.clone(),
         }
     }
 
