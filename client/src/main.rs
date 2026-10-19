@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use ewebsock::{WsEvent, WsMessage, connect};
 use macroquad::prelude::*;
 use throwdown_core::card::Card;
-use throwdown_core::game::{Action, Game};
-use throwdown_core::player::Player;
+use throwdown_core::game::Action;
 use throwdown_core::protocol::{ClientMsg, PlayerView, ServerMsg};
 
 const VIRTUAL_HEIGHT: f32 = 600.0;
@@ -23,6 +22,11 @@ const CARD_RAISE_OFFSET: f32 = -25.0;
 const FAN_RADIUS: f32 = 400.0;
 const FAN_STEP: f32 = 0.08;
 const FAN_MAX_ANGLE: f32 = 0.8;
+
+const HAND_BOTTOM_MARGIN: f32 = 90.0;
+const AVATAR_RADIUS: f32 = 30.0;
+const AVATAR_BEHIND: f32 = 90.0;
+const OWN_AVATAR_SIDE: f32 = 240.0;
 
 #[derive(Clone, Copy)]
 struct Pose {
@@ -127,8 +131,10 @@ async fn main() {
         };
 
         let my_turn = view.current_player == view.my_seat;
-        let hand_poses = hand_layout(view.my_hand.len(), virtual_w);
-        let stack_poses = stack_layout(view.center_stack.len());
+        let num_players = view.players.len();
+        let my_seat_pose = seat_pose(view.my_seat, view.my_seat, num_players, virtual_w);
+        let hand_poses = hand_layout(view.my_hand.len(), my_seat_pose, FAN_RADIUS);
+        let stack_poses = stack_layout(view.center_stack.len(), virtual_w);
         let discard_poses = discard_layout(view.discard_count, virtual_w);
         let take_home_rect = Rect::new(600.0, 400.0, 100.0, 40.0);
 
@@ -161,6 +167,21 @@ async fn main() {
             format!("{}'s turn", view.players[view.current_player].name)
         };
         draw_text(turn_text, 40.0, 40.0 + FONT_SIZE, FONT_SIZE, TEXT_COLOR);
+
+        for (seat, player) in view.players.iter().enumerate() {
+            let pose = seat_pose(seat, view.my_seat, num_players, virtual_w);
+            let is_me = seat == view.my_seat;
+            if !is_me {
+                for card in pile_layout(player.hand_count, pose.center) {
+                    draw_card_back(card);
+                }
+            }
+            draw_avatar(
+                &player.name,
+                avatar_position(pose, is_me),
+                seat == view.current_player,
+            );
+        }
 
         for (i, (card, target)) in view.my_hand.iter().zip(hand_poses.iter()).enumerate() {
             let target = if hovered == Some(i) {
@@ -280,39 +301,35 @@ fn draw_card_back(pose: Pose) {
 }
 
 // cards sit on an arc around a pivot below the screen, each one tilted outwards
-fn hand_layout(card_count: usize, virtual_w: f32) -> Vec<Pose> {
-    let mut cards = Vec::new();
+fn hand_layout(card_count: usize, seat: Pose, radius: f32) -> Vec<Pose> {
     let step = if card_count > 1 {
         FAN_STEP.min(FAN_MAX_ANGLE / (card_count - 1) as f32)
     } else {
         0.0
     };
-    let pivot = vec2(virtual_w / 2.0, VIRTUAL_HEIGHT - 90.0 + FAN_RADIUS);
-    for i in 0..card_count {
-        let angle = (i as f32 - (card_count - 1) as f32 / 2.0) * step;
-        let center = pivot + vec2(angle.sin(), -angle.cos()) * FAN_RADIUS;
-        cards.push(Pose {
-            center,
-            rotation: angle,
-        });
-    }
-    cards
+    let facing = Vec2::from_angle(seat.rotation);
+    let pivot = seat.center + facing.rotate(vec2(0.0, radius));
+    (0..card_count)
+        .map(|i| {
+            let angle = (i as f32 - (card_count - 1) as f32 / 2.0) * step;
+            Pose {
+                center: pivot + facing.rotate(vec2(angle.sin(), -angle.cos()) * radius),
+                rotation: seat.rotation + angle,
+            }
+        })
+        .collect()
 }
 
-fn stack_layout(card_count: usize) -> Vec<Pose> {
-    let mut cards = Vec::new();
-    let mut y = 100.0;
-    let width = CARD_WIDTH;
-    let height = CARD_HEIGHT;
-    for i in 0..card_count {
-        let x = i as f32 * 10.0 + width;
-        y += i as f32 * 10.0;
-        cards.push(Pose {
-            center: vec2(x + width / 2.0, y + height / 2.0),
+fn stack_layout(card_count: usize, virtual_w: f32) -> Vec<Pose> {
+    let step = vec2(10.0, 10.0);
+    let start = vec2(virtual_w / 2.0, VIRTUAL_HEIGHT / 2.0)
+        - step * card_count.saturating_sub(1) as f32 / 2.0;
+    (0..card_count)
+        .map(|i| Pose {
+            center: start + step * i as f32,
             rotation: 0.0,
-        });
-    }
-    cards
+        })
+        .collect()
 }
 
 fn discard_layout(card_count: usize, virtual_w: f32) -> Vec<Pose> {
@@ -328,4 +345,65 @@ fn discard_layout(card_count: usize, virtual_w: f32) -> Vec<Pose> {
         });
     }
     cards
+}
+
+fn pile_layout(card_count: usize, center: Vec2) -> Vec<Pose> {
+    (0..card_count)
+        .map(|i| Pose {
+            center,
+            rotation: ((i as f32) * 1.7).sin() * 0.15,
+        })
+        .collect()
+}
+
+fn seat_pose(seat: usize, viewer: usize, num_players: usize, virtual_w: f32) -> Pose {
+    let relative = (seat + num_players - viewer) % num_players;
+    let angle =
+        std::f32::consts::FRAC_PI_2 + relative as f32 * std::f32::consts::TAU / num_players as f32;
+    let table_center = vec2(virtual_w / 2.0, VIRTUAL_HEIGHT / 2.0);
+    let radius = vec2(virtual_w * 0.35, VIRTUAL_HEIGHT / 2.0 - HAND_BOTTOM_MARGIN);
+    Pose {
+        center: table_center + vec2(angle.cos() * radius.x, angle.sin() * radius.y),
+        rotation: angle - std::f32::consts::FRAC_PI_2,
+    }
+}
+
+fn avatar_position(seat: Pose, is_me: bool) -> Vec2 {
+    let local = if is_me {
+        vec2(-OWN_AVATAR_SIDE, 20.0)
+    } else {
+        vec2(0.0, AVATAR_BEHIND)
+    };
+    seat.center + Vec2::from_angle(seat.rotation).rotate(local)
+}
+
+fn draw_avatar(name: &str, pos: Vec2, is_turn: bool) {
+    if is_turn {
+        draw_circle(pos.x, pos.y, AVATAR_RADIUS + 4.0, GOLD);
+    }
+    draw_circle(pos.x, pos.y, AVATAR_RADIUS, DARKBLUE);
+
+    let initial = name
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    let size = measure_text(&initial, None, 32, 1.0);
+    draw_text(
+        &initial,
+        pos.x - size.width / 2.0,
+        pos.y + size.offset_y / 2.0,
+        32.0,
+        WHITE,
+    );
+
+    let size = measure_text(name, None, FONT_SIZE as u16, 1.0);
+    draw_text(
+        name,
+        pos.x - size.width / 2.0,
+        pos.y + AVATAR_RADIUS + FONT_SIZE,
+        FONT_SIZE,
+        TEXT_COLOR,
+    );
 }
