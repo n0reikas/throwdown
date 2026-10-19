@@ -80,7 +80,6 @@ player's hand, and clicks only work on your turn.
 Work in progress:
 
 - no win condition or game-over screen yet
-- other players aren't drawn on screen yet
 - dealing happens instantly instead of being animated
 - the client always connects to `localhost:9001`, so all players must be on the same machine
 - no reconnecting: if a player leaves mid-game, the game can't continue
