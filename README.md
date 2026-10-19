@@ -1,17 +1,54 @@
 # Throwdown
 
-A hot-seat card game for three players, written in Rust with [macroquad](https://macroquad.rs/).
+A multiplayer card game for three players, written in Rust with [macroquad](https://macroquad.rs/).
+A WebSocket server runs the game and each player connects with their own client window.
 
 ## Running
 
 **Rust** must be installed. See [Rust install page](https://rust-lang.org/tools/install/) for
 install info.
 
-Run this in your terminal to play:
+Start the server:
 
 ```sh
-cargo run
+cargo run -p server
 ```
+
+It listens on `ws://localhost:9001`. Then start one client per player, each in its own
+terminal, passing the player's name after `--`:
+
+```sh
+cargo run -p client -- Alice
+cargo run -p client -- Bob
+cargo run -p client -- Carl
+```
+
+Each window shows "Waiting for players..." until all three have joined, then the game starts.
+
+### Testing the server without a client
+
+The server can also be driven by hand with [websocat](https://github.com/vi/websocat)
+(`cargo install websocat`). Connect from three terminals with `websocat ws://localhost:9001`
+and send JSON messages, one per line:
+
+```json
+{"Join":{"name":"Alice"}}
+{"Act":{"PlayCard":0}}
+{"Act":"TakeHome"}
+```
+
+## Project layout
+
+The repository is a Cargo workspace with three crates:
+
+- `core/` (`throwdown-core`): game rules, cards, and the client/server message types
+  (`protocol.rs`). No graphics or networking.
+- `server/`: accepts WebSocket connections, owns the only real `Game`, validates moves and
+  sends each player a view of the game that hides the other players' hands.
+- `client/`: the macroquad window. Draws the latest view from the server and sends clicks
+  back as actions.
+
+Run the rules tests with `cargo test -p throwdown-core`.
 
 ## How it plays
 
@@ -35,11 +72,15 @@ in their hand loses.
 
 ## Controls
 
-Click a card in your hand to play it, or click **Take Home**. The hand of the player whose
-turn it is is shown at the bottom of the screen; it slides away between turns so players
-can pass the device.
+Click a card in your hand to play it, or click **Take Home**. Each window shows only its own
+player's hand, and clicks only work on your turn.
 
 ## Status
 
-Work in progress: there is no win condition or game-over screen yet, and player names are
-hard-coded in `main.rs`.
+Work in progress:
+
+- no win condition or game-over screen yet
+- other players aren't drawn on screen yet
+- dealing happens instantly instead of being animated
+- the client always connects to `localhost:9001`, so all players must be on the same machine
+- no reconnecting: if a player leaves mid-game, the game can't continue
